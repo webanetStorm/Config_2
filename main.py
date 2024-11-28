@@ -1,4 +1,3 @@
-import os
 import argparse
 import subprocess
 from pathlib import Path
@@ -16,18 +15,21 @@ class DependencyVisualizer:
         Формирует путь к POM файлу в репозитории Maven.
         """
         group_path = group_id.replace(".", "/")
-        return Path(f"{self.repo_url}/{group_path}/{artifact_id}/{version}/{artifact_id}-{version}.pom")
+        return Path(f"{self.repo_url}/{group_path}/{version}/{artifact_id}-{version}.pom")
 
     def fetch_pom_file(self, group_id, artifact_id, version):
         """
         Загружает и парсит POM-файл для указанного артефакта.
         """
         pom_path = self.get_pom_file_path(group_id, artifact_id, version)
+        print(f"Ищем POM файл по пути: {pom_path}")  # Лог
+
         if not pom_path.exists():
             raise FileNotFoundError(f"POM файл не найден по пути: {pom_path}")
 
         try:
             tree = ET.parse(pom_path)
+            print(f"Успешно прочитан POM файл: {pom_path}")  # Лог
             return tree.getroot()
         except ET.ParseError as e:
             raise ValueError(f"Ошибка парсинга POM файла: {e}")
@@ -36,19 +38,17 @@ class DependencyVisualizer:
         """
         Извлекает зависимости из POM файла.
         """
+        namespaces = {'m': 'http://maven.apache.org/POM/4.0.0'}
         dependencies = []
-        for dependency in pom_root.findall(".//dependency"):
-            group_id = dependency.find("groupId").text
-            artifact_id = dependency.find("artifactId").text
-            version = dependency.find("version")
+        for dependency in pom_root.findall(".//m:dependency", namespaces):
+            group_id = dependency.find("m:groupId", namespaces).text
+            artifact_id = dependency.find("m:artifactId", namespaces).text
+            version = dependency.find("m:version", namespaces)
             version = version.text if version is not None else "LATEST"
             dependencies.append((group_id, artifact_id, version))
         return dependencies
 
     def resolve_dependencies(self, group_id, artifact_id, version, resolved=None):
-        """
-        Рекурсивно разрешает зависимости Maven.
-        """
         if resolved is None:
             resolved = {}
 
@@ -57,6 +57,7 @@ class DependencyVisualizer:
             return resolved
 
         try:
+            print(f"Обрабатываем пакет: {package_name}")
             pom_root = self.fetch_pom_file(group_id, artifact_id, version)
             dependencies = self.parse_dependencies(pom_root)
             resolved[package_name] = dependencies
@@ -65,7 +66,8 @@ class DependencyVisualizer:
                 self.resolve_dependencies(dep_group, dep_artifact, dep_version, resolved)
 
         except FileNotFoundError:
-            print(f"Предупреждение: POM файл для {package_name} не найден, пропускаем...")
+            print(f"Предупреждение: POM файл для {package_name} не найден. Узел останется без связей.")
+            resolved[package_name] = []  # Добавляем узел без зависимостей
         except Exception as e:
             print(f"Ошибка обработки {package_name}: {e}")
 
@@ -77,9 +79,11 @@ class DependencyVisualizer:
         """
         mermaid_graph = "graph TD\n"
         for package, deps in dependencies.items():
+            sanitized_package = sanitize_mermaid_name(package)
             for dep_group, dep_artifact, dep_version in deps:
-                dep_name = f"{dep_group}:{dep_artifact}:{dep_version}"
-                mermaid_graph += f'  "{package}" --> "{dep_name}"\n'
+                dep_name = sanitize_mermaid_name(f"{dep_group}:{dep_artifact}:{dep_version}")
+                mermaid_graph += f"  {sanitized_package} --> {dep_name}\n"
+        print(f"Сгенерированный Mermaid граф:\n{mermaid_graph}")  # Лог для проверки
         return mermaid_graph
 
     def save_graph_image(self, mermaid_code):
@@ -108,6 +112,12 @@ class DependencyVisualizer:
         self.save_graph_image(mermaid_code)
         print("Граф успешно сохранен в", self.output_path)
 
+
+def sanitize_mermaid_name(name):
+    """
+    Преобразует имя пакета в допустимый для Mermaid формат.
+    """
+    return name.replace(":", "_").replace(".", "_").replace("-", "_")
 
 def main():
     parser = argparse.ArgumentParser(
